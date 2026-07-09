@@ -1,0 +1,86 @@
+name: smoke
+# Live consumer smoke for Binclusive/a11y@v0 (static) + action-url@v0 (browser).
+# Proves: @v0 resolves, the :0 / :0-browser images pull from ghcr, the engine
+# runs, valid SARIF is emitted, and the static gate has TEETH (fails on a seeded
+# violation). This is consumer-truth, not just ref-correctness.
+on:
+  push:
+  workflow_dispatch:
+permissions:
+  contents: read
+  security-events: write # upload-sarif to code scanning
+
+jobs:
+  static-gate:
+    name: static @v0 — must FAIL on the seeded violation
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # continue-on-error: a seeded violation is EXPECTED to red the gate — we
+      # assert that failure below rather than letting it red the whole job.
+      - id: scan
+        continue-on-error: true
+        uses: Binclusive/a11y@v0
+        with:
+          fail-on: block
+
+      - name: Assert the gate FAILED (teeth)
+        run: |
+          echo "static scan outcome: ${{ steps.scan.outcome }}"
+          if [ "${{ steps.scan.outcome }}" != "failure" ]; then
+            echo "::error::static @v0 gate did NOT fail on a seeded img-no-alt — no teeth"
+            exit 1
+          fi
+          echo "ok: gate failed on the seeded violation"
+
+      - name: Assert SARIF emitted + valid + has findings
+        run: |
+          f="${{ steps.scan.outputs.sarif-file }}"
+          echo "sarif-file: $f"
+          if [ -z "$f" ] || [ ! -f "$f" ]; then
+            echo "::error::static @v0 emitted no SARIF file"
+            exit 1
+          fi
+          python3 - "$f" <<'PY'
+          import json, sys
+          d = json.load(open(sys.argv[1]))
+          assert d.get("runs"), "SARIF has no runs[]"
+          n = sum(len(r.get("results", [])) for r in d["runs"])
+          assert n > 0, "SARIF has zero results — the seeded violation was not reported"
+          print(f"ok: valid SARIF, {n} result(s)")
+          PY
+
+      - uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: ${{ steps.scan.outputs.sarif-file }}
+
+  url-scan:
+    name: browser action-url @v0 — must render + emit SARIF
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - id: urlscan
+        continue-on-error: true
+        uses: Binclusive/a11y/action-url@v0
+        with:
+          url: https://example.com
+
+      - name: Assert URL scan pulled :0-browser + emitted SARIF
+        run: |
+          f="${{ steps.urlscan.outputs.sarif-file }}"
+          echo "url sarif-file: $f  (outcome ${{ steps.urlscan.outcome }})"
+          if [ -z "$f" ] || [ ! -f "$f" ]; then
+            echo "::error::action-url @v0 emitted no SARIF file (image pull or render failed?)"
+            exit 1
+          fi
+          python3 - "$f" <<'PY'
+          import json, sys
+          d = json.load(open(sys.argv[1]))
+          assert d.get("runs"), "URL SARIF has no runs[]"
+          print("ok: valid URL SARIF from the :0-browser image")
+          PY
