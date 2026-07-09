@@ -88,3 +88,15 @@ jobs:
           assert d.get("runs"), "URL SARIF has no runs[]"
           print("ok: valid URL SARIF from the :0-browser image")
           PY
+
+      # THE consumer-shaped check (the under-testing that let the container-path bug
+      # slip): a real host step must be able to resolve the emitted sarif-file path.
+      # upload-artifact runs on the runner host and resolves the path against the
+      # workspace — a container-internal path (e.g. /github/runner_temp/...) fails
+      # here exactly as github/codeql-action/upload-sarif would for a real consumer.
+      - name: Consumer proof — a host step resolves the emitted path
+        uses: actions/upload-artifact@v4
+        with:
+          name: url-scan-sarif
+          path: ${{ steps.urlscan.outputs.sarif-file }}
+          if-no-files-found: error
