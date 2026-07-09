@@ -21,11 +21,15 @@ jobs:
 
       # continue-on-error: a seeded violation is EXPECTED to red the gate — we
       # assert that failure below rather than letting it red the whole job.
+      # fail-on: warn is the real dogfood default (the runbook gates at warn), and
+      # the seeded img-no-alt is a warn-tier finding — so asserting the warn gate
+      # tests the ACTUAL consumer path AND proves teeth in one shot. (At block, a
+      # warn-tier finding correctly does not gate — that is not a smoke failure.)
       - id: scan
         continue-on-error: true
         uses: Binclusive/a11y@v0
         with:
-          fail-on: block
+          fail-on: warn
 
       - name: Assert the gate FAILED (teeth)
         run: |
