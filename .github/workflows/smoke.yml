@@ -1,11 +1,19 @@
 name: smoke
-# Live consumer smoke for Binclusive/a11y@v0 (static) + action-url@v0 (browser).
+# Standing consumer-smoke for Binclusive/a11y@v0 (static) + action-url@v0 (browser).
 # Proves: @v0 resolves, the :0 / :0-browser images pull from ghcr, the engine
 # runs, valid SARIF is emitted, and the static gate has TEETH (fails on a seeded
 # violation). This is consumer-truth, not just ref-correctness.
 on:
-  push:
+  # STANDING triggers (#2680): the monorepo release workflows emit `image-published`
+  # after each republish so any image/action change auto-runs this smoke; the daily
+  # schedule is the standing safety net when no cross-repo dispatch token is set;
+  # `workflow_dispatch` is the manual run and `push` keeps seed/self edits self-testing.
+  repository_dispatch:
+    types: [image-published]
+  schedule:
+    - cron: '17 7 * * *'
   workflow_dispatch:
+  push:
 permissions:
   contents: read
   security-events: write # upload-sarif to code scanning
