@@ -70,6 +70,73 @@ jobs:
         with:
           sarif_file: ${{ steps.scan.outputs.sarif-file }}
 
+  summary-wiring:
+    name: summary @v0 — the input's VALUE must reach the container
+    runs-on: ubuntu-latest
+    # The gap this closes: the two jobs around it exercise `base` and `fail-on` only, so
+    # `summary` shipped with no consumer-truth at all — which is how a11y#329's "action.yml +
+    # entrypoint declare/consume GITHUB_TOKEN" acceptance criterion was closed unmet.
+    #
+    # Both steps run at `fail-on: block` on purpose. The seeded img-no-alt in src/Logo.tsx is
+    # WARN-tier, so at block the scan is CLEAN and exits 0 — every red below is therefore
+    # attributable to INPUT_SUMMARY, never to a finding. At warn (the other job's setting) the
+    # gate reds anyway and the signal would be worthless.
+    permissions:
+      contents: read
+      pull-requests: write # the shape a real `summary: true` consumer runs
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # ON. `summary: "true"` renders the rollup to $GITHUB_STEP_SUMMARY — that surface needs no
+      # token and no pull request, so it is the half a push/schedule-triggered smoke can reach.
+      # The sticky-comment half needs a PR context this repo never has, so it logs a skip and
+      # exits 0. No assertion step follows: GitHub gives each step its OWN $GITHUB_STEP_SUMMARY
+      # file, so a later step cannot read this one's. The digest is visible on the run's summary
+      # page; what is asserted here is that `true` is ACCEPTED and does not break a clean run.
+      #
+      # COUPLING, know it before you debug a red: this step has no `continue-on-error`, no `base`
+      # (so it is a FULL-TREE scan), and gates at `block`. Its premise — "the only seeded finding
+      # is warn-tier, so a block scan is clean" — silently ties this badge to NO block-tier finding
+      # ever existing anywhere in this repo. Ship a new block-tier rule and this step reds with a
+      # message pointing at `summary`, which will not be the cause. Fix by seeding-aware scoping,
+      # not by relaxing the gate; `block` is what makes every OTHER red here attributable to
+      # INPUT_SUMMARY. Step ORDER is also deliberate: this non-`continue-on-error` step runs FIRST
+      # so a systemic failure (image pull, engine crash) reds loudly here instead of arriving as a
+      # false PASS in the refusal assertion below, which reads any failure as "refused".
+      - id: summary_on
+        uses: Binclusive/a11y@v0
+        with:
+          fail-on: block
+          summary: "true"
+
+      # REFUSAL — the load-bearing assertion. The entrypoint accepts `true`, `false` and `""`;
+      # anything else is REFUSED with exit 4 rather than quietly read as off. That refusal is only
+      # reachable if the value actually crossed into the container, so this is the one check that
+      # would have caught the dark-feature defect.
+      # Be exact about what that defect WAS: `summary` was not declared as an input at all. For a
+      # Docker action the runner injects `INPUT_<NAME>` for every DECLARED input (uppercased,
+      # spaces → `_`, hyphens preserved), so a declared input missing from `runs.env` still
+      # reaches the container — a missing `env:` line alone would not have hidden it. With no
+      # declaration there is nothing to inject: the runner warns and DROPS `summary: "yes"`,
+      # nothing crosses the boundary, the clean block scan exits 0, and a weaker test passes.
+      - id: summary_bad
+        continue-on-error: true
+        uses: Binclusive/a11y@v0
+        with:
+          fail-on: block
+          summary: "yes"
+
+      - name: Assert the typo'd value was REFUSED
+        run: |
+          echo "refusal outcome: ${{ steps.summary_bad.outcome }}"
+          if [ "${{ steps.summary_bad.outcome }}" != "failure" ]; then
+            echo "::error::@v0 accepted summary: 'yes' — INPUT_SUMMARY is not reaching the container"
+            exit 1
+          fi
+          echo "ok: summary: 'yes' refused — the input's value reaches the entrypoint"
+
   url-scan:
     name: browser action-url @v0 — must render + emit SARIF
     runs-on: ubuntu-latest

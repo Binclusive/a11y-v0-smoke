@@ -19,6 +19,16 @@ build/publish steps missed: a private ghcr package (#2636), an unwritable browse
 - **Static** — `uses: Binclusive/a11y@v0` on the seeded `img`-no-alt violation in `src/Logo.tsx`
   at `fail-on: warn`: the gate must FAIL (real teeth) and emit valid SARIF with at least one
   result.
+- **Summary wiring** — `summary: "true"` must run clean at `fail-on: block`, and `summary: "yes"`
+  must be REFUSED. The refusal is the load-bearing half: it is reachable only if the input's value
+  actually crossed into the container, so it is the check that catches an input the consumer can
+  write in `with:` but that never reaches the engine — the dark-feature class (a11y#346, where
+  `summary` was not declared in `action.yml` at all, so the runner warned and dropped it). Note
+  what does *not* create that class on a Docker action: a declared input missing from `runs.env`
+  still arrives, because the runner injects `INPUT_<NAME>` for every declared input (uppercased,
+  spaces → `_`, hyphens preserved). The missing **declaration** is the bug. The sticky-comment
+  half is **not** covered — it needs a PR context this repo never has; only the
+  `$GITHUB_STEP_SUMMARY` half is reachable from a push/schedule run.
 - **URL** — `uses: Binclusive/a11y/action-url@v0` renders a URL in the `:0-browser` image: it
   must emit host-resolvable SARIF, proven by a real `upload-artifact` consumer step (the
   container-path regression class, #2678).
