@@ -4,9 +4,16 @@ name: smoke
 # emitted, and the static gate has TEETH (fails on a seeded violation). This is
 # consumer-truth, not just ref-correctness.
 #
-# It runs @v0 with NO Binclusive credential, which is the point: it is the only
-# gate that sees what a keyless consumer sees. Keep it that way — handing it a key
-# would blind it exactly as `smoke.sh` is blinded by its fixture session.
+# It runs @v0 with NO Binclusive credential. That is the point: it is the only gate
+# in the org that sees what a keyless consumer sees — the monorepo's smoke.sh mounts
+# a fixture OAuth session and is blind to this by construction.
+#
+# KNOWN EXPIRY (a11y#353 / CLI 0.21.0): the identity gate makes `ci` require a key, so
+# a keyless run will exit 7 with a 0-byte SARIF and the teeth/SARIF assertions below
+# become unsatisfiable. When that lands, do NOT fix it by adding a key here — that
+# deletes the only keyless observation post. Split it: this job asserts the keyless
+# REFUSAL is clean and diagnostic (exit 7, no dangling sarif-file, a message naming
+# the credential), and a separate KEYED job keeps proving the gate has teeth.
 on:
   # STANDING triggers (#2680): the monorepo release workflows emit `image-published`
   # after each republish so any image/action change auto-runs this smoke; the daily
@@ -58,6 +65,17 @@ jobs:
           echo "sarif-file: $f"
           if [ -z "$f" ] || [ ! -f "$f" ]; then
             echo "::error::static @v0 emitted no SARIF file"
+            exit 1
+          fi
+          # A 0-byte file is NOT the same failure as a malformed one, and json.load
+          # cannot tell you which. The entrypoint redirects the CLI's stdout into
+          # results.sarif, so the file exists from the instant the step starts —
+          # empty means the CLI refused BEFORE scanning and wrote nothing. Without
+          # this branch the job reds on a JSONDecodeError traceback under a step
+          # named "Assert SARIF emitted + valid", and the README's triage sends the
+          # reader hunting a container-path bug (#2678) that is not there.
+          if [ ! -s "$f" ]; then
+            echo "::error::static @v0 wrote a 0-BYTE SARIF — it refused before scanning, not after. FIRST SUSPECT: the CLI identity gate (keyless = exit 7, 'Not authenticated'). The message is in the 'scan' step's log, which continue-on-error renders with a GREEN check — open it."
             exit 1
           fi
           python3 - "$f" <<'PY'
