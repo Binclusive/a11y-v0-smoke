@@ -268,6 +268,28 @@ jobs:
           binclusive-api-key: ${{ secrets.BINCLUSIVE_API_KEY }}
           binclusive-project-id: ${{ vars.BINCLUSIVE_PROJECT_ID }}
 
+      # THE PROBE, and it is what makes a red job DIAGNOSABLE rather than merely red. `0` failing to
+      # gate has two completely different causes the step outcome alone cannot tell apart: the value
+      # never crossed the boundary, or it crossed and the cap logic ignored it. This step separates
+      # them, the same way `summary: "yes"` separates them for that input.
+      # `--max-violations <n>` is parsed by a non-negative-integer arg parser, so a non-numeric value
+      # is a malformed INVOCATION the CLI must refuse (exit 4, `config`) — and it refuses during
+      # commander's parse, BEFORE the scan. So:
+      #   this REFUSES + `0` does not gate ⇒ the input ARRIVES; the volume gate is the defect.
+      #   this passes  + `0` does not gate ⇒ nothing arrives; hyphenated INPUT_* injection is.
+      # KEYED on purpose, unlike the `summary` refusal it copies: keyless, a red here could be exit 7
+      # (no credential) instead of exit 4 (bad value), and `outcome` exposes no number to tell them
+      # apart — which would destroy the very distinction this step exists to draw. With a key the
+      # block scan is clean and exits 0, so a failure here can only be the refusal.
+      - id: cap_garbage
+        continue-on-error: true
+        uses: Binclusive/a11y@v0
+        with:
+          enforce: block
+          max-violations: "not-a-number"
+          binclusive-api-key: ${{ secrets.BINCLUSIVE_API_KEY }}
+          binclusive-project-id: ${{ vars.BINCLUSIVE_PROJECT_ID }}
+
       - name: Assert the generous cap did NOT gate (control)
         run: |
           echo "generous-cap outcome: ${{ steps.cap_generous.outcome }}"
@@ -276,6 +298,19 @@ jobs:
             exit 1
           fi
           echo "ok: 1 finding under a 9999 cap does not gate — the run is clean without the cap firing"
+
+      # Not an assertion — a ROUTER. It never reds on its own; it reads the probe and names which of
+      # the two suspects the failing assertion below points at, so a red run is triaged in the log
+      # instead of in someone's head.
+      - name: Diagnose — did the value reach the CLI at all?
+        if: always()
+        run: |
+          echo "garbage-value outcome: ${{ steps.cap_garbage.outcome }}"
+          if [ "${{ steps.cap_garbage.outcome }}" = "failure" ]; then
+            echo "the CLI REFUSED max-violations: 'not-a-number' — a value CROSSES the boundary, so hyphenated INPUT_MAX-VIOLATIONS injection WORKS. If the zero-cap assertion below is red, the defect is the VOLUME GATE, not the input pipeline."
+          else
+            echo "the CLI ACCEPTED max-violations: 'not-a-number' and exited 0 — nothing was parsed, so nothing arrived. If the zero-cap assertion below is red, the defect is the INPUT PIPELINE: the runner-injected hyphenated name is not read, and the underscored runs.env forwards are load-bearing."
+          fi
 
       - name: Assert max-violations 0 DID gate — the input reached the CLI
         run: |
