@@ -57,6 +57,12 @@ jobs:
           # now requires a credential. This is the KEYED half of the split — the keyless half is
           # the `keyless-refusal` job below, which asserts the opposite outcome on purpose.
           binclusive-api-key: ${{ secrets.BINCLUSIVE_API_KEY }}
+          # Required ALONGSIDE the key: the CLI refuses (exit 2) with a key and no project id.
+          # It is only reachable because the action exposes no `--no-upload` input — that flag
+          # scans and gates while transmitting nothing, which is what a smoke actually wants.
+          # Until it exists this must name a THROWAWAY project; fixture findings get filed to it
+          # daily. Tracked in Binclusive/monorepo#4938.
+          binclusive-project-id: ${{ vars.BINCLUSIVE_PROJECT_ID }}
 
       - name: Assert the gate FAILED (teeth)
         run: |
@@ -144,6 +150,12 @@ jobs:
           # CLI 0.21.0 running requires a credential. The refusal step below deliberately does
           # NOT get one — see its comment.
           binclusive-api-key: ${{ secrets.BINCLUSIVE_API_KEY }}
+          # Required ALONGSIDE the key: the CLI refuses (exit 2) with a key and no project id.
+          # It is only reachable because the action exposes no `--no-upload` input — that flag
+          # scans and gates while transmitting nothing, which is what a smoke actually wants.
+          # Until it exists this must name a THROWAWAY project; fixture findings get filed to it
+          # daily. Tracked in Binclusive/monorepo#4938.
+          binclusive-project-id: ${{ vars.BINCLUSIVE_PROJECT_ID }}
 
       # REFUSAL — the load-bearing assertion. The entrypoint accepts `true`, `false` and `""`;
       # anything else is REFUSED with exit 4 rather than quietly read as off. That refusal is only
