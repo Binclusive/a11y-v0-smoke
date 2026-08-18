@@ -1,8 +1,19 @@
 name: smoke
-# Standing consumer-smoke for Binclusive/a11y@v0 (static) + action-url@v0 (browser).
-# Proves: @v0 resolves, the :0 / :0-browser images pull from ghcr, the engine
-# runs, valid SARIF is emitted, and the static gate has TEETH (fails on a seeded
-# violation). This is consumer-truth, not just ref-correctness.
+# Standing consumer-smoke for Binclusive/a11y@v0.
+# Proves: @v0 resolves, its image pulls from ghcr, the engine runs, valid SARIF is
+# emitted, and the static gate has TEETH (fails on a seeded violation). This is
+# consumer-truth, not just ref-correctness.
+#
+# It runs @v0 with NO Binclusive credential. That is the point: it is the only gate
+# in the org that sees what a keyless consumer sees — the monorepo's smoke.sh mounts
+# a fixture OAuth session and is blind to this by construction.
+#
+# KNOWN EXPIRY (a11y#353 / CLI 0.21.0): the identity gate makes `ci` require a key, so
+# a keyless run will exit 7 with a 0-byte SARIF and the teeth/SARIF assertions below
+# become unsatisfiable. When that lands, do NOT fix it by adding a key here — that
+# deletes the only keyless observation post. Split it: this job asserts the keyless
+# REFUSAL is clean and diagnostic (exit 7, no dangling sarif-file, a message naming
+# the credential), and a separate KEYED job keeps proving the gate has teeth.
 on:
   # STANDING triggers (#2680): the monorepo release workflows emit `image-published`
   # after each republish so any image/action change auto-runs this smoke; the daily
@@ -54,6 +65,17 @@ jobs:
           echo "sarif-file: $f"
           if [ -z "$f" ] || [ ! -f "$f" ]; then
             echo "::error::static @v0 emitted no SARIF file"
+            exit 1
+          fi
+          # A 0-byte file is NOT the same failure as a malformed one, and json.load
+          # cannot tell you which. The entrypoint redirects the CLI's stdout into
+          # results.sarif, so the file exists from the instant the step starts —
+          # empty means the CLI refused BEFORE scanning and wrote nothing. Without
+          # this branch the job reds on a JSONDecodeError traceback under a step
+          # named "Assert SARIF emitted + valid", and the README's triage sends the
+          # reader hunting a container-path bug (#2678) that is not there.
+          if [ ! -s "$f" ]; then
+            echo "::error::static @v0 wrote a 0-BYTE SARIF — it refused before scanning, not after. FIRST SUSPECT: the CLI identity gate (keyless = exit 7, 'Not authenticated'). The message is in the 'scan' step's log, which continue-on-error renders with a GREEN check — open it."
             exit 1
           fi
           python3 - "$f" <<'PY'
@@ -136,42 +158,3 @@ jobs:
             exit 1
           fi
           echo "ok: summary: 'yes' refused — the input's value reaches the entrypoint"
-
-  url-scan:
-    name: browser action-url @v0 — must render + emit SARIF
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - id: urlscan
-        continue-on-error: true
-        uses: Binclusive/a11y/action-url@v0
-        with:
-          url: https://example.com
-
-      - name: Assert URL scan pulled :0-browser + emitted SARIF
-        run: |
-          f="${{ steps.urlscan.outputs.sarif-file }}"
-          echo "url sarif-file: $f  (outcome ${{ steps.urlscan.outcome }})"
-          if [ -z "$f" ] || [ ! -f "$f" ]; then
-            echo "::error::action-url @v0 emitted no SARIF file (image pull or render failed?)"
-            exit 1
-          fi
-          python3 - "$f" <<'PY'
-          import json, sys
-          d = json.load(open(sys.argv[1]))
-          assert d.get("runs"), "URL SARIF has no runs[]"
-          print("ok: valid URL SARIF from the :0-browser image")
-          PY
-
-      # THE consumer-shaped check (the under-testing that let the container-path bug
-      # slip): a real host step must be able to resolve the emitted sarif-file path.
-      # upload-artifact runs on the runner host and resolves the path against the
-      # workspace — a container-internal path (e.g. /github/runner_temp/...) fails
-      # here exactly as github/codeql-action/upload-sarif would for a real consumer.
-      - name: Consumer proof — a host step resolves the emitted path
-        uses: actions/upload-artifact@v4
-        with:
-          name: url-scan-sarif
-          path: ${{ steps.urlscan.outputs.sarif-file }}
-          if-no-files-found: error

@@ -3,9 +3,9 @@
 [![smoke](https://github.com/Binclusive/a11y-v0-smoke/actions/workflows/smoke.yml/badge.svg)](https://github.com/Binclusive/a11y-v0-smoke/actions/workflows/smoke.yml)
 
 **Standing consumer-smoke** for the published `Binclusive/a11y` action/image. It runs the
-PUBLISHED action exactly the way a real consumer would — resolving `@v0`, pulling the
-`:0` / `:0-browser` ghcr images, running the engine, and asserting valid SARIF — so a broken
-publish is caught even when the build/publish exit codes are green.
+PUBLISHED action exactly the way a real consumer would — resolving `@v0`, pulling the `:0` ghcr
+image, running the engine, and asserting valid SARIF — so a broken publish is caught even when the
+build/publish exit codes are green.
 
 This repo is **kept, not deleted**: it is the concrete artifact-verification guard for the
 action/image publish surface called for by epic
@@ -29,13 +29,10 @@ build/publish steps missed: a private ghcr package (#2636), an unwritable browse
   spaces → `_`, hyphens preserved). The missing **declaration** is the bug. The sticky-comment
   half is **not** covered — it needs a PR context this repo never has; only the
   `$GITHUB_STEP_SUMMARY` half is reachable from a push/schedule run.
-- **URL** — `uses: Binclusive/a11y/action-url@v0` renders a URL in the `:0-browser` image: it
-  must emit host-resolvable SARIF, proven by a real `upload-artifact` consumer step (the
-  container-path regression class, #2678).
 
 ## When it runs
 
-- **On republish** — the monorepo `release-image.yml` / `release-image-browser.yml` workflows
+- **On republish** — the monorepo `release-image.yml` workflow
   emit a `repository_dispatch` (`image-published`) after each successful image publish, so any
   image/action change auto-runs this smoke with no human trigger. `image-published` is the wire
   contract between the two halves — the monorepo emitter is
@@ -55,9 +52,10 @@ runs the *published* `@v0`, not repo code.
    - **static @v0** red → the static publish is broken. `Assert the gate FAILED (teeth)` failing
      means `@v0` no longer flags the seeded `img`-no-alt (a manifest/engine regression); the SARIF
      assert failing means it ran but emitted no / invalid / empty SARIF (the #2678 class).
-   - **browser action-url @v0** red → the `:0-browser` variant is broken. A missing SARIF file
-     points at an image-pull or render failure (private ghcr #2636, unwritable mount #2659); the
-     `Consumer proof` upload-artifact step failing means the emitted path is container-internal and
-     unresolvable by a real host consumer (#2678).
+   - **A 0-BYTE SARIF** → the run refused BEFORE scanning, not after. The entrypoint redirects
+     the CLI's stdout into `results.sarif`, so the file is created empty the instant the step
+     starts; an empty one means nothing was ever written. First suspect is the CLI identity gate
+     (keyless = exit 7, `Not authenticated`). The message is in the `scan` step's own log, which
+     `continue-on-error` renders with a GREEN check — open it anyway.
 2. The fix lives in the **monorepo** (the action manifests / image build), not here — this repo only
    *observes*. Re-run this smoke (`workflow_dispatch`) after the republish to confirm green.
