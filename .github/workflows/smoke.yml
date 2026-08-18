@@ -186,6 +186,141 @@ jobs:
           fi
           echo "ok: summary: 'yes' refused — the input's value reaches the entrypoint"
 
+  volume-cap:
+    name: max-violations @v0 — a BRAND-NEW input must reach the CLI, unrebuilt
+    runs-on: ubuntu-latest
+    # WHAT THIS PROVES, in two halves. The second is the load-bearing one.
+    #
+    # 1. THE COLLAPSE HELD. `max-violations` has been a CLI flag for ages and was unreachable from
+    #    a workflow, because exposing an input used to mean editing the image entrypoint's shell
+    #    marshal, publishing a new image, and repinning the digest in `action.yml`. It shipped
+    #    (a11y#360) as ONE `inputs:` entry — no image rebuild, no digest repin; `@v0` still runs
+    #    sha256:880271a0. The entrypoint now runs a fixed `ci --github-action-inputs --format
+    #    sarif` and the CLI derives each input's env name from its own commander option table. If
+    #    this job is green, "declaring the input IS the wiring" is consumer-truth, not a claim.
+    #
+    # 2. HYPHENATED `INPUT_*` INJECTION WORKS — the half that had never been proven live. The
+    #    runner injects `INPUT_<NAME>` for every declared input with HYPHENS PRESERVED, so this one
+    #    arrives as `INPUT_MAX-VIOLATIONS`, which is not a valid shell identifier. That is exactly
+    #    why the old shell reader needed the hand-written underscored forward `INPUT_FAIL_ON` in
+    #    `runs.env`, and `max-violations` deliberately has NO such forward line. So the ONLY path
+    #    from `with: max-violations:` to the CLI is the hyphenated injected var, read directly.
+    #    Green here means the surviving `runs.env` forwards are vestigial. RED here means the
+    #    opposite — hyphenated injection does NOT reach the CLI and those forwards are load-bearing
+    #    after all. Do NOT repair that red by adding a `runs.env` line in Binclusive/a11y; that
+    #    deletes the finding. The red IS the result.
+    #
+    # THE ISOLATION TRICK, borrowed from `summary-wiring` above: both steps run at `enforce: block`
+    # and the only seeded finding (the img-no-alt in src/Logo.tsx) is WARN-tier, so a block scan is
+    # CLEAN and exits 0. `max-violations` is a VOLUME cap — it fails when the non-baselined finding
+    # count EXCEEDS N, independent of `enforce` and of `fail-on`. With the enforcement axis
+    # deliberately silent, any failure below is attributable to the cap and to nothing else.
+    #
+    # THE PAIR is the proof, not the failing step. A lone `max-violations: 0` that reds proves
+    # nothing — a dropped input, a crashed engine and a working cap all look the same from here.
+    # The generous control is what says "identical step, cap raised, green", which leaves the cap
+    # value as the only difference that moved the outcome.
+    #
+    # SEEDED COUNT, and the coupling it creates: exactly 1 finding today (the run log says
+    # "b8e ci — 1 finding(s) uploaded"). `0` reds because 1 > 0 and `9999` passes because 1 <= 9999,
+    # with the whole plausible range between them unused on purpose — seed a second violation and
+    # neither assertion moves. What WOULD break this job is a new BLOCK-tier finding anywhere in
+    # this repo: the control would red under a step named for the cap, which will not be the cause.
+    # Same coupling `summary-wiring` documents; fix it by seeding-aware scoping, never by relaxing
+    # `block`, which is the thing making every red here attributable to the cap.
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # THE CONTROL, and it runs FIRST on purpose — same step ORDER reasoning as `summary-wiring`:
+      # it carries no `continue-on-error`, so a systemic fault (image pull, engine crash, a revoked
+      # key, an `enforce` axis that stopped working) reds loudly HERE instead of arriving as a false
+      # PASS in the cap assertion below, which would read any failure at all as "the cap fired".
+      #
+      # A generous cap is used rather than an omitted input deliberately: omitting it would also
+      # pass if the runner silently dropped the input, so the control would be satisfied by the
+      # very defect this job hunts. `9999` is only green if a value crossed the boundary AND was
+      # parsed as a number the count fits under.
+      - id: cap_generous
+        uses: Binclusive/a11y@v0
+        with:
+          enforce: block
+          max-violations: "9999"
+          # Keyed, like every step that must actually RUN: since CLI 0.21.0 `ci` authenticates
+          # before it scans, so a keyless step refuses (exit 7) long before a cap is ever evaluated
+          # — which would red this control for a reason that has nothing to do with the cap.
+          binclusive-api-key: ${{ secrets.BINCLUSIVE_API_KEY }}
+          # Required ALONGSIDE the key: the CLI refuses (exit 2) with a key and no project id.
+          # Same THROWAWAY project the other keyed jobs use; fixture findings get filed to it.
+          # Tracked in Binclusive/monorepo#4938.
+          binclusive-project-id: ${{ vars.BINCLUSIVE_PROJECT_ID }}
+
+      # THE CAP. Byte-identical to the control except `0`, so the cap value is the only variable.
+      # 1 seeded finding EXCEEDS 0, so this must red — and with the enforcement axis at `block` on
+      # a warn-tier finding, it cannot red for any enforcement reason.
+      - id: cap_zero
+        continue-on-error: true
+        uses: Binclusive/a11y@v0
+        with:
+          enforce: block
+          max-violations: "0"
+          binclusive-api-key: ${{ secrets.BINCLUSIVE_API_KEY }}
+          binclusive-project-id: ${{ vars.BINCLUSIVE_PROJECT_ID }}
+
+      # THE PROBE, and it is what makes a red job DIAGNOSABLE rather than merely red. `0` failing to
+      # gate has two completely different causes the step outcome alone cannot tell apart: the value
+      # never crossed the boundary, or it crossed and the cap logic ignored it. This step separates
+      # them, the same way `summary: "yes"` separates them for that input.
+      # `--max-violations <n>` is parsed by a non-negative-integer arg parser, so a non-numeric value
+      # is a malformed INVOCATION the CLI must refuse (exit 4, `config`) — and it refuses during
+      # commander's parse, BEFORE the scan. So:
+      #   this REFUSES + `0` does not gate ⇒ the input ARRIVES; the volume gate is the defect.
+      #   this passes  + `0` does not gate ⇒ nothing arrives; hyphenated INPUT_* injection is.
+      # KEYED on purpose, unlike the `summary` refusal it copies: keyless, a red here could be exit 7
+      # (no credential) instead of exit 4 (bad value), and `outcome` exposes no number to tell them
+      # apart — which would destroy the very distinction this step exists to draw. With a key the
+      # block scan is clean and exits 0, so a failure here can only be the refusal.
+      - id: cap_garbage
+        continue-on-error: true
+        uses: Binclusive/a11y@v0
+        with:
+          enforce: block
+          max-violations: "not-a-number"
+          binclusive-api-key: ${{ secrets.BINCLUSIVE_API_KEY }}
+          binclusive-project-id: ${{ vars.BINCLUSIVE_PROJECT_ID }}
+
+      - name: Assert the generous cap did NOT gate (control)
+        run: |
+          echo "generous-cap outcome: ${{ steps.cap_generous.outcome }}"
+          if [ "${{ steps.cap_generous.outcome }}" != "success" ]; then
+            echo "::error::@v0 red with max-violations: 9999 on a CLEAN block scan. The control is the half that makes the cap assertion mean anything, so read this before the one below. Suspects in order: the value did not parse as a number (a dropped/garbled INPUT_MAX-VIOLATIONS could arrive empty and be read as 0), the \`enforce\` axis regressed and the warn-tier seed is now gating, or a systemic fault (image pull, revoked key). Open THIS step's log — the CLI names which."
+            exit 1
+          fi
+          echo "ok: 1 finding under a 9999 cap does not gate — the run is clean without the cap firing"
+
+      # Not an assertion — a ROUTER. It never reds on its own; it reads the probe and names which of
+      # the two suspects the failing assertion below points at, so a red run is triaged in the log
+      # instead of in someone's head.
+      - name: Diagnose — did the value reach the CLI at all?
+        if: always()
+        run: |
+          echo "garbage-value outcome: ${{ steps.cap_garbage.outcome }}"
+          if [ "${{ steps.cap_garbage.outcome }}" = "failure" ]; then
+            echo "the CLI REFUSED max-violations: 'not-a-number' — a value CROSSES the boundary, so hyphenated INPUT_MAX-VIOLATIONS injection WORKS. If the zero-cap assertion below is red, the defect is the VOLUME GATE, not the input pipeline."
+          else
+            echo "the CLI ACCEPTED max-violations: 'not-a-number' and exited 0 — nothing was parsed, so nothing arrived. If the zero-cap assertion below is red, the defect is the INPUT PIPELINE: the runner-injected hyphenated name is not read, and the underscored runs.env forwards are load-bearing."
+          fi
+
+      - name: Assert max-violations 0 DID gate — the input reached the CLI
+        run: |
+          echo "zero-cap outcome: ${{ steps.cap_zero.outcome }}"
+          if [ "${{ steps.cap_zero.outcome }}" != "failure" ]; then
+            echo "::error::@v0 accepted max-violations: 0 on a repo with 1 finding and exited 0 — the cap never fired. Given the control above passed, the engine ran fine, so the input did not arrive. THIS IS THE HYPHENATED-INJECTION FINDING: \`max-violations\` has NO \`runs.env\` forward in Binclusive/a11y's action.yml, so its only path to the CLI is the runner-injected INPUT_MAX-VIOLATIONS — a name no shell can read as an identifier. Red here means the surviving underscored forwards (INPUT_FAIL_ON) are load-bearing and every future hyphenated input needs one. Do NOT fix this by adding the forward and re-running; record it first."
+            exit 1
+          fi
+          echo "ok: max-violations: 0 gated a clean block scan — a brand-new input reached the CLI with no image rebuild, via hyphenated INPUT_* injection alone"
+
   # THE OBSERVATION POST. Everything above is keyed, so nothing above can see what a consumer
   # without a credential experiences — which is exactly the blind spot the monorepo's own
   # `smoke.sh` had (it mounts a fixture OAuth session, so both of its scanning lanes are keyed).
