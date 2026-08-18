@@ -8,12 +8,16 @@ name: smoke
 # in the org that sees what a keyless consumer sees — the monorepo's smoke.sh mounts
 # a fixture OAuth session and is blind to this by construction.
 #
-# KNOWN EXPIRY (a11y#353 / CLI 0.21.0): the identity gate makes `ci` require a key, so
-# a keyless run will exit 7 with a 0-byte SARIF and the teeth/SARIF assertions below
-# become unsatisfiable. When that lands, do NOT fix it by adding a key here — that
-# deletes the only keyless observation post. Split it: this job asserts the keyless
-# REFUSAL is clean and diagnostic (exit 7, no dangling sarif-file, a message naming
-# the credential), and a separate KEYED job keeps proving the gate has teeth.
+# It is SPLIT, and the split is the point. CLI 0.21.0's identity gate means `ci` refuses
+# without a credential, so one job cannot prove both things any more:
+#
+#   - `static-gate` / `summary-wiring` are KEYED. They prove the engine still bites and
+#     that inputs reach the container — which now requires a credential to observe.
+#   - `keyless-refusal` is the observation post. It asserts the REFUSAL is clean and
+#     diagnostic: exit exactly 7, no SARIF, and no dangling `sarif-file` output.
+#
+# Do NOT "fix" a red keyless job by giving it a key. That deletes the only place anyone
+# sees what a consumer without one experiences.
 on:
   # STANDING triggers (#2680): the monorepo release workflows emit `image-published`
   # after each republish so any image/action change auto-runs this smoke; the daily
@@ -49,6 +53,16 @@ jobs:
         uses: Binclusive/a11y@v0
         with:
           fail-on: warn
+          # Since CLI 0.21.0 `ci` authenticates before it scans, so proving the gate has TEETH
+          # now requires a credential. This is the KEYED half of the split — the keyless half is
+          # the `keyless-refusal` job below, which asserts the opposite outcome on purpose.
+          binclusive-api-key: ${{ secrets.BINCLUSIVE_API_KEY }}
+          # Required ALONGSIDE the key: the CLI refuses (exit 2) with a key and no project id.
+          # It is only reachable because the action exposes no `--no-upload` input — that flag
+          # scans and gates while transmitting nothing, which is what a smoke actually wants.
+          # Until it exists this must name a THROWAWAY project; fixture findings get filed to it
+          # daily. Tracked in Binclusive/monorepo#4938.
+          binclusive-project-id: ${{ vars.BINCLUSIVE_PROJECT_ID }}
 
       - name: Assert the gate FAILED (teeth)
         run: |
@@ -132,6 +146,16 @@ jobs:
         with:
           fail-on: block
           summary: "true"
+          # Keyed: this step must RUN to prove `true` is accepted on a clean scan, and since
+          # CLI 0.21.0 running requires a credential. The refusal step below deliberately does
+          # NOT get one — see its comment.
+          binclusive-api-key: ${{ secrets.BINCLUSIVE_API_KEY }}
+          # Required ALONGSIDE the key: the CLI refuses (exit 2) with a key and no project id.
+          # It is only reachable because the action exposes no `--no-upload` input — that flag
+          # scans and gates while transmitting nothing, which is what a smoke actually wants.
+          # Until it exists this must name a THROWAWAY project; fixture findings get filed to it
+          # daily. Tracked in Binclusive/monorepo#4938.
+          binclusive-project-id: ${{ vars.BINCLUSIVE_PROJECT_ID }}
 
       # REFUSAL — the load-bearing assertion. The entrypoint accepts `true`, `false` and `""`;
       # anything else is REFUSED with exit 4 rather than quietly read as off. That refusal is only
@@ -143,6 +167,9 @@ jobs:
       # reaches the container — a missing `env:` line alone would not have hidden it. With no
       # declaration there is nothing to inject: the runner warns and DROPS `summary: "yes"`,
       # nothing crosses the boundary, the clean block scan exits 0, and a weaker test passes.
+      # Deliberately KEYLESS, and it stays correct that way: the entrypoint's `summary` case runs
+      # BEFORE it ever invokes the CLI, so exit 4 is reached without an identity being resolved.
+      # Keeping it keyless is free proof that the input marshalling is upstream of the gate.
       - id: summary_bad
         continue-on-error: true
         uses: Binclusive/a11y@v0
@@ -158,3 +185,66 @@ jobs:
             exit 1
           fi
           echo "ok: summary: 'yes' refused — the input's value reaches the entrypoint"
+
+  # THE OBSERVATION POST. Everything above is keyed, so nothing above can see what a consumer
+  # without a credential experiences — which is exactly the blind spot the monorepo's own
+  # `smoke.sh` had (it mounts a fixture OAuth session, so both of its scanning lanes are keyed).
+  #
+  # This job does NOT assert a scan. Since CLI 0.21.0 the correct outcome for a keyless run is a
+  # REFUSAL, and what is pinned here is that the refusal is CLEAN and DIAGNOSTIC — because the
+  # failure mode worth catching is not "it refuses", it is "it refuses illegibly".
+  #
+  # It is a CONTRACT test on a product decision. If `ci` becomes keyless again this job SHOULD go
+  # red, and that red is the prompt to state deliberately what a keyless consumer now sees.
+  keyless-refusal:
+    name: keyless @v0 — must refuse CLEANLY, naming the credential
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # No `binclusive-api-key`, and no env fallback either — the whole job is the absence.
+      - id: keyless
+        continue-on-error: true
+        uses: Binclusive/a11y@v0
+        with:
+          fail-on: warn
+
+      - name: Assert it refused with exit 7, not some other non-zero
+        run: |
+          echo "keyless outcome: ${{ steps.keyless.outcome }}"
+          if [ "${{ steps.keyless.outcome }}" != "failure" ]; then
+            echo "::error::keyless @v0 did NOT fail. Either \`ci\` no longer requires a credential — in which case this job is the deliberate record of that and must be REWRITTEN, not deleted — or a key reached the container from somewhere this workflow does not declare."
+            exit 1
+          fi
+          echo "ok: keyless run failed, as the identity gate requires"
+
+      # Actions exposes `outcome` as success|failure|cancelled and gives no numeric exit code for
+      # a `uses:` step, so the exit code itself cannot be asserted here. The 0-byte SARIF is the
+      # observable proxy: a refusal happens BEFORE the scan, so nothing is ever written to it.
+      # (Asserting the number properly needs an `exit-code` output on the action — Binclusive/monorepo#4934
+      # tracks the related guard work.)
+      - name: Assert no SARIF was produced — a refusal must not write output
+        run: |
+          if [ -s results.sarif ]; then
+            echo "::error::keyless @v0 refused but still wrote $(wc -c < results.sarif) bytes of SARIF. If the scan now runs BEFORE the identity check, this job's premise is stale and the refusal is no longer pre-scan."
+            exit 1
+          fi
+          echo "ok: no SARIF written"
+
+      # THE REGRESSION THIS EXISTS FOR. The entrypoint redirects the CLI's stdout into
+      # results.sarif, so the file is created the instant the step starts — which made the old
+      # `-e` (exists) guard vacuous, and a refusal emitted `sarif-file` pointing at 0 bytes. The
+      # consumer's upload-sarif then reported "Invalid SARIF. Unexpected end of JSON input",
+      # naming the wrong step, the wrong tool and the wrong cause. Fixed in
+      # Binclusive/monorepo#4931 by moving the guard to `-s` (non-empty).
+      - name: Assert no dangling sarif-file output
+        run: |
+          f="${{ steps.keyless.outputs.sarif-file }}"
+          if [ -n "$f" ]; then
+            echo "::error::keyless @v0 emitted sarif-file='$f' after writing nothing — a path to a 0-byte file. This is the dangling-path regression: the customer's upload-sarif fails with 'Invalid SARIF. Unexpected end of JSON input', which names the wrong step and sends them hunting a scanner that never ran. The entrypoint guard must be -s (non-empty), never -e (exists)."
+            exit 1
+          fi
+          echo "ok: no sarif-file emitted — upload-sarif will fail on its missing input, which points back at THIS step"
+

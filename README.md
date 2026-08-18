@@ -54,8 +54,12 @@ runs the *published* `@v0`, not repo code.
      assert failing means it ran but emitted no / invalid / empty SARIF (the #2678 class).
    - **A 0-BYTE SARIF** → the run refused BEFORE scanning, not after. The entrypoint redirects
      the CLI's stdout into `results.sarif`, so the file is created empty the instant the step
-     starts; an empty one means nothing was ever written. First suspect is the CLI identity gate
-     (keyless = exit 7, `Not authenticated`). The message is in the `scan` step's own log, which
-     `continue-on-error` renders with a GREEN check — open it anyway.
+     starts; an empty one means nothing was ever written. First suspect is a missing or revoked
+     `BINCLUSIVE_API_KEY` secret (keyless = exit 7, `Not authenticated`). The message is in the
+     `scan` step's own log, which `continue-on-error` renders with a GREEN check — open it anyway.
+   - **keyless @v0** red → the refusal stopped being clean. Read which of its three asserts
+     failed: not-a-failure means the identity gate is gone (rewrite this job, do not delete it);
+     SARIF written means the scan now runs before the identity check; a dangling `sarif-file`
+     means the entrypoint guard regressed from `-s` back to `-e`.
 2. The fix lives in the **monorepo** (the action manifests / image build), not here — this repo only
    *observes*. Re-run this smoke (`workflow_dispatch`) after the republish to confirm green.
